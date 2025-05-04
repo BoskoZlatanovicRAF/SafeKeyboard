@@ -10,11 +10,43 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:fontFamily="@font/roboto_regular"
-        android:text="To use SafeKeyboard, you need to enable it in your device settings."
+        android:text="To use SafeKeyboard, you need to enter your email and your child's age, then enable the keyboard in device settings."
         android:textSize="16sp"
         android:padding="16dp"
         android:gravity="center"
         app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/email_input"/>
+
+    <EditText
+        android:id="@+id/email_input"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:hint="Enter your email (required)"
+        android:inputType="textEmailAddress"
+        android:padding="12dp"
+        android:fontFamily="@font/roboto_regular"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginTop="8dp"
+        app:layout_constraintTop_toBottomOf="@id/instructions_text"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/child_age_input"/>
+
+    <EditText
+        android:id="@+id/child_age_input"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:hint="Child's age (years)"
+        android:inputType="number"
+        android:padding="12dp"
+        android:fontFamily="@font/roboto_regular"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginBottom="16dp"
+        app:layout_constraintTop_toBottomOf="@id/email_input"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintBottom_toTopOf="@id/enable_keyboard_button"/>
@@ -24,7 +56,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Enable Keyboard"
-        app:layout_constraintTop_toBottomOf="@id/instructions_text"
+        app:layout_constraintTop_toBottomOf="@id/child_age_input"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintBottom_toBottomOf="parent"/>
